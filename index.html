@@ -1,0 +1,549 @@
+<!DOCTYPE html> 
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>New Go Game Mode</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background-color: #ffffff; /* 白色背景 */
+        }
+        #game-container {
+            display: flex;
+            align-items: center;
+            flex-direction: column;
+            margin-top: 20px;
+        }
+        #board-container {
+            position: relative;
+            margin-top: 20px;
+        }
+        #board {
+            display: grid;
+            grid-template-columns: repeat(19, 30px);
+            grid-template-rows: repeat(19, 30px);
+            gap: 1px;
+            background-color: var(--board-color, rgb(135, 150, 160)); /* 背景颜色可调 */
+            border: 1px solid black;
+            position: relative;
+        }
+        .cell {
+            width: 30px;
+            height: 30px;
+            position: relative;
+            border: 1px solid rgb(85, 50, 30); /* 深棕色网格线 */
+        }
+        .star-point-cell {
+            background-color: var(--star-point-color, rgb(240, 120, 70)); /* 星位颜色 */
+        }
+        .stone {
+            width: var(--stone-size, 24px);
+            height: var(--stone-size, 24px);
+            border-radius: 50%;
+            position: absolute;
+            top: calc((30px - var(--stone-size, 24px)) / 2);
+            left: calc((30px - var(--stone-size, 24px)) / 2);
+            z-index: 10;
+            box-shadow: 0 0 4px rgba(0, 0, 0, 0.5); /* 模拟2px羽化边缘效果 */
+        }
+        .black {
+            background-color: black;
+        }
+        .white {
+            background-color: white;
+        }
+        .neutral {
+            background-color: var(--neutral-color, rgb(130, 255, 45)); /* 默认中立子颜色 */
+        }
+        .marked {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: red;
+            font-size: 24px;
+        }
+        #info {
+            margin-top: 10px;
+        }
+        #controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        #game-description {
+            margin-top: 10px;
+            margin-bottom: 20px;
+            padding: 10px;
+            font-size: 16px;
+            text-align: center;
+            background-color: rgba(240, 240, 240, 0.9);
+            border: 1px solid rgb(85, 50, 30);
+            border-radius: 8px;
+            max-width: 600px;
+        }
+        #undo-steps-input, #undo-neutral-steps-input {
+            width: 50px;
+            text-align: center;
+        }
+        #color-controls, #size-controls {
+            margin-top: 20px;
+            display: flex;
+            gap: 15px;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 游戏说明文本 -->
+    <div id="game-description">
+        《中立子的围棋》<br/>
+        开局前自定义若干中立子(绿色)，点击“Start Game”开始对局。<br/>
+        中立子会极大地影响对局的进展，传统围棋定式不再适用，开始新模式的挑战吧！
+    </div>
+
+    <div id="game-container">
+        <div id="info">
+            <p id="turn-info">当前回合: <span id="turn-display">设置中立子</span></p>
+            <p>黑方提子数: <span id="black-captures">0</span></p>
+            <p>白方提子数: <span id="white-captures">0</span></p>
+        </div>
+
+        <!-- 棋盘容器 -->
+        <div id="board-container">
+            <div id="board"></div>
+        </div>
+
+        <div id="controls">
+            <button id="start-game-btn">开始对局</button>
+            <button id="undo-btn">悔棋</button>
+            <input id="undo-steps-input" type="number" min="1" value="1" title="悔棋步数">
+            <button id="undo-neutral-btn">悔中立子</button> 
+            <input id="undo-neutral-steps-input" type="number" min="1" value="1" title="中立子悔棋步数">
+            <button id="new-game-btn">新对局</button>
+            <button id="black-resign-btn">黑方认输</button>
+            <button id="white-resign-btn">白方认输</button>
+        </div>
+
+        <!-- 颜色调整控件 -->
+        <div id="color-controls">
+            <label>中立子颜色: <input type="color" id="neutral-color-picker" value="#82ff2d"></label> <!-- 默认中立子颜色 -->
+            <label>棋盘背景颜色: <input type="color" id="board-color-picker" value="#8796a0"></label> <!-- 默认背景颜色 -->
+            <label>星位颜色: <input type="color" id="star-point-color-picker" value="#f07846"></label>
+        </div>
+
+        <!-- 棋子大小调整控件 -->
+        <div id="size-controls">
+            <label>棋子大小: <input type="range" id="stone-size-slider" min="20" max="30" value="24"></label>
+        </div>
+    </div>
+
+    <script>
+        const BOARD_SIZE = 19;
+        let board = Array.from({ length: BOARD_SIZE }, () => Array(BOARD_SIZE).fill(null));
+        let turn = 'neutral';  // neutral, black or white
+        let gameStarted = false;  // 游戏是否开始
+        let moveHistory = [];  // 记录每一步的历史
+        let neutralHistory = []; // 记录中立子的历史
+        let capturedHistory = [];  // 记录每次被提掉的棋子（按步数记录）
+        let markedHistory = []; // 记录每次的红色标记历史
+        let blackCaptures = 0;
+        let whiteCaptures = 0;
+        let gameEnded = false;
+        let koPosition = null; // 记录劫争的位置
+        let markedPositions = []; // 被标记的格子（中立子被提掉后）
+
+        const boardElement = document.getElementById('board');
+        const turnDisplay = document.getElementById('turn-display');
+        const blackCapturesDisplay = document.getElementById('black-captures');
+        const whiteCapturesDisplay = document.getElementById('white-captures');
+        const neutralColorPicker = document.getElementById('neutral-color-picker');
+        const boardColorPicker = document.getElementById('board-color-picker');
+        const starPointColorPicker = document.getElementById('star-point-color-picker');
+        const stoneSizeSlider = document.getElementById('stone-size-slider');
+
+        // 星位的坐标
+        const starPoints = [
+            [3, 3], [3, 9], [3, 15],
+            [9, 3], [9, 9], [9, 15],
+            [15, 3], [15, 9], [15, 15]
+        ];
+
+        // 初始化棋盘
+        function initBoard() {
+            boardElement.innerHTML = '';  // 清空棋盘元素
+            board = Array.from({ length: BOARD_SIZE }, () => Array(BOARD_SIZE).fill(null)); // 重置棋盘
+            moveHistory = [];
+            neutralHistory = [];
+            capturedHistory = [];
+            markedHistory = [];
+            blackCaptures = 0;
+            whiteCaptures = 0;
+            blackCapturesDisplay.textContent = blackCaptures;
+            whiteCapturesDisplay.textContent = whiteCaptures;
+            gameEnded = false;
+            turn = 'neutral';
+            gameStarted = false;
+            koPosition = null;  // 初始化劫争位置
+            markedPositions = [];  // 初始化标记
+            turnDisplay.textContent = "设置中立子";  // 更新显示
+
+            for (let row = 0; row < BOARD_SIZE; row++) {
+                for (let col = 0; col < BOARD_SIZE; col++) {
+                    const cell = createCell(row, col);
+                    boardElement.appendChild(cell);
+                }
+            }
+        }
+
+        // 创建棋盘格子
+        function createCell(row, col) {
+            const cell = document.createElement('div');
+            cell.classList.add('cell');
+            cell.dataset.row = row;
+            cell.dataset.col = col;
+            if (starPoints.some(([r, c]) => r === row && c === col)) {
+                cell.classList.add('star-point-cell');
+            }
+            cell.addEventListener('click', onCellClick);
+            return cell;
+        }
+
+        // 显示提示信息
+        function showMessage(message) {
+            alert(message);
+        }
+
+        // 添加红色叉形标记
+        function addMarkedPosition(row, col) {
+            const cell = document.querySelector(`.cell[data-row="${row}"][data-col="${col}"]`);
+            const marker = document.createElement('div');
+            marker.classList.add('marked');
+            marker.textContent = '×';  // 红色叉形
+            cell.appendChild(marker);
+            markedPositions.push({ row, col });  // 记录标记位置
+        }
+
+        // 移除所有标记
+        function clearMarkedPositions() {
+            markedPositions.forEach(({ row, col }) => {
+                const cell = document.querySelector(`.cell[data-row="${row}"][data-col="${col}"]`);
+                const marker = cell.querySelector('.marked');
+                if (marker) marker.remove();  // 移除红色叉形
+            });
+            markedPositions = [];  // 清空标记位置记录
+        }
+
+        // 恢复标记（悔棋时）
+        function restoreMarkedPositions(marked) {
+            clearMarkedPositions();  // 先清除当前的标记
+            marked.forEach(({ row, col }) => {
+                addMarkedPosition(row, col);  // 恢复历史标记
+            });
+        }
+
+        // 棋盘点击事件处理
+        function onCellClick(event) {
+            if (gameEnded) return;
+
+            const row = parseInt(event.target.dataset.row);
+            const col = parseInt(event.target.dataset.col);
+
+            if (turn === 'neutral' && !board[row][col]) {
+                placeStone(row, col, 'neutral');
+                neutralHistory.push({ row, col });
+            } else if (gameStarted && !board[row][col]) {
+                if (!isLegalMove(row, col, turn)) return;
+                // 深拷贝当前的标记状态
+                const currentMarked = JSON.parse(JSON.stringify(markedPositions));
+                moveHistory.push({ row, col, turn, koPosition, markedPositions: currentMarked });  // 保存劫争位置和标记
+                placeStone(row, col, turn);
+
+                const captured = checkCapture(row, col, turn);
+                capturedHistory.push(captured);  // 将当前步数的提子记录下来
+
+                // 如果提掉的是中立子，添加红色标记
+                captured.forEach(stone => {
+                    if (stone.color === 'neutral') {
+                        addMarkedPosition(stone.row, stone.col);
+                    }
+                });
+
+                checkKo(row, col, captured, turn);  // 检查劫争
+                switchTurn();
+            }
+        }
+
+        // 检查劫争
+        function checkKo(row, col, captured, color) {
+            if (captured.length === 1) {  // 只提掉了一颗子
+                const group = getGroup(row, col, color); // 获取己方的连通块
+                if (group.length === 1) {  // 只有一颗子在连通块
+                    const liberties = getLiberties(group);
+                    if (liberties.length === 1) {  // 只剩下1气
+                        koPosition = captured[0];  // 记录被提掉子的原位置为劫争位置
+                    } else {
+                        koPosition = null;  // 不满足劫争条件
+                    }
+                } else {
+                    koPosition = null;  // 多颗子在连通块，不形成劫争
+                }
+            } else {
+                koPosition = null;  // 如果提掉的子多于一颗，则无劫争
+            }
+        }
+
+        // 检查是否可以合法落子 (加入禁入点的判断)
+        function isLegalMove(row, col, color) {
+            if (!isInBounds(row, col) || board[row][col]) return false;
+
+            // 检查标记位置
+            if (markedPositions.some(pos => pos.row === row && pos.col === col)) {
+                showMessage("该位置被标记，暂时无法落子！");
+                return false;
+            }
+
+            // 劫争判定，禁止在劫争位置立即落子
+            if (koPosition && koPosition.row === row && koPosition.col === col) {
+                showMessage("不能在劫争点立即落子！");
+                return false;
+            }
+
+            // 检查是否是禁入点
+            if (isIllegalMove(row, col, color)) {
+                showMessage("该位置为禁入点，无法落子！");
+                return false;
+            }
+
+            return true;  // 可以落子
+        }
+
+        // 清除标记的红叉（在对方落子后）
+        function clearMarkedPositionsAfterOpponentMove() {
+            clearMarkedPositions();
+        }
+
+        // 检查是否是禁入点（禁入点定义为：落子后无法提子且无气）
+        function isIllegalMove(row, col, color) {
+            // 临时放置棋子以模拟落子
+            board[row][col] = color;
+
+            // 获取当前落子后该棋子的连通块和气数
+            const group = getGroup(row, col, color);
+            const liberties = getLiberties(group);
+
+            // 检查是否能够提掉对方的子
+            const capturedStones = checkCapture(row, col, color, true);  // 预览提子
+
+            // 禁入点的条件：1. 自己没有气 2. 并且不能提掉对方任何子
+            const isIllegal = liberties.length === 0 && capturedStones.length === 0;
+
+            board[row][col] = null;  // 撤销临时放置的棋子
+            return isIllegal;  // 是禁入点
+        }
+
+        // 放置棋子
+        function placeStone(row, col, color) {
+            const cell = document.querySelector(`.cell[data-row="${row}"][data-col="${col}"]`);
+            const stone = document.createElement('div');
+            stone.classList.add('stone', color);  // 为棋子添加相应的颜色类名
+            cell.appendChild(stone);
+            board[row][col] = color;
+
+            // 如果有标记，并且另一方合法落子，清除标记
+            if (markedPositions.length > 0) {
+                clearMarkedPositionsAfterOpponentMove();
+            }
+        }
+
+        // 切换回合
+        function switchTurn() {
+            if (turn === 'black') {
+                turn = 'white';
+                turnDisplay.textContent = "白方回合";
+            } else {
+                turn = 'black';
+                turnDisplay.textContent = "黑方回合";
+            }
+        }
+
+        // 检查提掉对方的子，包括中立子
+        function checkCapture(row, col, color, preview = false) {
+            const opponentColors = ['black', 'white', 'neutral'];
+            const directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+            let capturedStones = [];
+
+            directions.forEach(([dr, dc]) => {
+                const r = row + dr;
+                const c = col + dc;
+                const cellColor = board[r] && board[r][c];
+                if (opponentColors.includes(cellColor) && cellColor !== color) {
+                    const group = getGroup(r, c, cellColor);
+                    if (getLiberties(group).length === 0) {
+                        group.forEach(({ row, col }) => {
+                            capturedStones.push({ row, col, color: cellColor });  // 记录棋子的颜色和位置
+                        });
+                    }
+                }
+            });
+
+            if (!preview && capturedStones.length > 0) {
+                // 仅在非预览模式下，实际移除提子
+                capturedStones.forEach(({ row, col }) => {
+                    const cell = document.querySelector(`.cell[data-row="${row}"][data-col="${col}"]`);
+                    cell.innerHTML = '';  // 清空该位置的棋子
+                    board[row][col] = null;  // 清除棋盘上的记录
+                });
+            }
+
+            return capturedStones;  // 返回被提掉的棋子
+        }
+
+        // 获取一块连通的棋子
+        function getGroup(row, col, color) {
+            const stack = [[row, col]];
+            const group = [];
+            const visited = new Set();
+            const key = (r, c) => `${r},${c}`;
+
+            while (stack.length) {
+                const [r, c] = stack.pop();
+                if (!visited.has(key(r, c)) && board[r][c] === color) {
+                    visited.add(key(r, c));
+                    group.push({ row: r, col: c });
+                    [[-1, 0], [1, 0], [0, -1], [0, 1]].forEach(([dr, dc]) => {
+                        const nr = r + dr;
+                        const nc = c + dc;
+                        if (isInBounds(nr, nc)) {
+                            stack.push([nr, nc]);
+                        }
+                    });
+                }
+            }
+            return group;
+        }
+
+        // 获取一块棋子的气
+        function getLiberties(group) {
+            const liberties = [];
+            group.forEach(({ row, col }) => {
+                [[-1, 0], [1, 0], [0, -1], [0, 1]].forEach(([dr, dc]) => {
+                    const r = row + dr;
+                    const c = col + dc;
+                    if (isInBounds(r, c) && !board[r][c]) {
+                        liberties.push([r, c]);
+                    }
+                });
+            });
+            return liberties;
+        }
+
+        // 悔棋功能，按时间顺序恢复被提掉的子
+        function undoLastMove() {
+            const undoSteps = parseInt(document.getElementById('undo-steps-input').value, 10);
+            if (moveHistory.length >= undoSteps) {
+                for (let i = 0; i < undoSteps; i++) {
+                    const lastMove = moveHistory.pop();
+                    const { row, col, koPosition: savedKoPosition, markedPositions: savedMarked } = lastMove;
+                    const cell = document.querySelector(`.cell[data-row="${row}"][data-col="${col}"]`);
+                    cell.innerHTML = '';  // 清空该位置的棋子
+                    board[row][col] = null;  // 清除棋盘上的记录
+
+                    // 恢复每一步被提掉的棋子
+                    const lastCaptured = capturedHistory.pop();
+                    if (lastCaptured) {
+                        lastCaptured.forEach(({ row, col, color }) => {
+                            placeStone(row, col, color);  // 根据记录的颜色恢复棋子
+                        });
+                    }
+
+                    koPosition = savedKoPosition;  // 恢复劫争位置
+                    restoreMarkedPositions(savedMarked);  // 恢复红色标记
+                    switchTurn();
+                }
+            } else {
+                showMessage("悔棋步数超过了可用范围");
+            }
+        }
+
+        // 中立子悔棋功能，支持步数
+        function undoNeutralMove() {
+            const undoNeutralSteps = parseInt(document.getElementById('undo-neutral-steps-input').value, 10);
+            if (neutralHistory.length >= undoNeutralSteps) {
+                for (let i = 0; i < undoNeutralSteps; i++) {
+                    const lastNeutral = neutralHistory.pop();
+                    const { row, col } = lastNeutral;
+                    const cell = document.querySelector(`.cell[data-row="${row}"][data-col="${col}"]`);
+                    cell.innerHTML = '';  // 移除中立子
+                    board[row][col] = null;
+                }
+            } else {
+                showMessage("中立子悔棋步数超过了可用范围！");
+            }
+        }
+
+        // 判断是否在棋盘范围内
+        function isInBounds(row, col) {
+            return row >= 0 && row < BOARD_SIZE && col >= 0 && col < BOARD_SIZE;
+        }
+
+        // 新对局
+        function startNewGame() {
+            initBoard();
+        }
+
+        // 开始游戏
+        function startGame() {
+            gameStarted = true;
+            turn = 'black';
+            turnDisplay.textContent = "黑方回合";
+        }
+
+        // 颜色控制事件
+        neutralColorPicker.addEventListener('input', function() {
+            document.documentElement.style.setProperty('--neutral-color', neutralColorPicker.value);
+        });
+        boardColorPicker.addEventListener('input', function() {
+            document.documentElement.style.setProperty('--board-color', boardColorPicker.value);
+        });
+        starPointColorPicker.addEventListener('input', function() {
+            document.documentElement.style.setProperty('--star-point-color', starPointColorPicker.value);
+        });
+
+        // 棋子大小调整事件
+        stoneSizeSlider.addEventListener('input', function() {
+            document.documentElement.style.setProperty('--stone-size', stoneSizeSlider.value + 'px');
+        });
+
+        // 认输功能
+        document.getElementById('black-resign-btn').addEventListener('click', function() {
+            if (confirm("黑方认输，是否结束对局？")) {
+                showMessage('白方胜利！');
+                gameEnded = true;
+            }
+        });
+
+        document.getElementById('white-resign-btn').addEventListener('click', function() {
+            if (confirm("白方认输，是否结束对局？")) {
+                showMessage('黑方胜利！');
+                gameEnded = true;
+            }
+        });
+
+        initBoard();
+
+        // 控件事件绑定
+        document.getElementById('start-game-btn').addEventListener('click', startGame);
+        document.getElementById('undo-btn').addEventListener('click', undoLastMove);
+        document.getElementById('undo-neutral-btn').addEventListener('click', undoNeutralMove);
+        document.getElementById('new-game-btn').addEventListener('click', startNewGame);
+    </script>
+
+</body>
+</html>
